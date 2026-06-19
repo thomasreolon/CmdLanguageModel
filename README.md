@@ -64,29 +64,34 @@ sequence each step — microseconds for this model).
 > immune because it pins a frozen `tokenizer_spec.json` / `vocab.txt` matching the
 > checkpoint — exactly why the export step is decoupled.
 
-## Setup (Phase 1)
+## Install
+
+Prereqs: `git`, `cmake`, a C++17 compiler, `curl`.
 
 ```bash
-# 1. get llama.cpp + apply the denselogic arch patch
-git submodule update --init llm/llama.cpp        # (or `git submodule add <url> llm/llama.cpp` first time)
-git -C llm/llama.cpp apply ../denselogic-arch.patch   # adds the LLM_ARCH_DENSELOGIC arch
-
-# 2. export the model  (uses hh_llm's venv to read the checkpoint)
-cd llm/export
-/home/thomas/hh_llm/.venv/bin/python convert_to_gguf.py \
-    --ckpt /home/thomas/hh_llm/checkpoints/nanogpt/best.pt \
-    --spec tokenizer_spec.json --out ../models/nanogpt-bash.gguf
-
-# 3. build the runner
-cmake -S llm/runner -B llm/runner/build && cmake --build llm/runner/build
-
-# 4. install the shell tweak
-terminal/install.sh   # appends `source .../qq.zsh` to ~/.zshrc
+git clone --recursive <repo-url> qq_terminal && cd qq_terminal
+./setup.sh                 # patch llama.cpp, build qq-llm, download the models
+./terminal/install.sh      # add the !! widget to ~/.zshrc
+# open a new zsh, then:  !! list png files modified today
 ```
 
-See `docs/pytorch-to-gguf.md` for the conversion details.
+`setup.sh` is idempotent — re-run it any time. If you forgot `--recursive`, run
+`git submodule update --init` first. Models are fetched from a GitHub Release; point
+`setup.sh` at yours with `QQ_RELEASE_URL=...` (or just run `convert_to_gguf.py` if you
+have the `hh_llm` checkpoints).
 
-> Status: both phases implemented and verified end-to-end. `terminal/qq.zsh` (the `!!`
-> tweak), `llm/export/convert_to_gguf.py` (gpt2 + denselogic), the libllama runner
-> `llm/runner/qq-llm.cpp`, and the custom `denselogic` arch in `llm/llama.cpp` are all
-> working. Build with the steps above and `terminal/install.sh`.
+### Publishing models (maintainer)
+
+The `.gguf` files (~172 MB) are gitignored — distribute them via a GitHub Release:
+
+```bash
+# build them from hh_llm checkpoints (see docs/pytorch-to-gguf.md), then:
+gh release create v1 llm/models/*.gguf
+# set QQ_RELEASE_URL in setup.sh to .../releases/latest/download
+```
+
+The small per-model `*.vocab.txt` files *are* committed, so `setup.sh` knows which
+models to fetch. See `docs/pytorch-to-gguf.md` for the conversion details.
+
+> Status: both phases implemented and verified end-to-end (token-for-token vs PyTorch).
+> Default model is **bash-v2**; `denselogic` and `nanogpt` are selectable via `QQ_MODEL`.
