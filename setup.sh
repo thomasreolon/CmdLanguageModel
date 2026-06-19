@@ -10,7 +10,7 @@ cd "$(dirname "$0")"
 
 # Base URL of the GitHub Release that holds the .gguf model files. Override via env, e.g.
 #   QQ_RELEASE_URL=https://github.com/me/qq_terminal/releases/download/v1 ./setup.sh
-: "${QQ_RELEASE_URL:=https://github.com/CHANGEME/qq_terminal/releases/latest/download}"
+: "${QQ_RELEASE_URL:=https://github.com/thomasreolon/qq_terminal/releases/latest/download}"
 
 echo "==> 1/4  llama.cpp submodule"
 [ -f llm/llama.cpp/CMakeLists.txt ] || git submodule update --init llm/llama.cpp
