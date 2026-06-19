@@ -69,7 +69,7 @@ sequence each step — microseconds for this model).
 Prereqs: `git`, `cmake`, a C++17 compiler, `curl`.
 
 ```bash
-git clone --recursive <repo-url> qq_terminal && cd qq_terminal
+git clone --recursive https://github.com/thomasreolon/CmdLanguageModel.git && cd CmdLanguageModel
 ./setup.sh                 # patch llama.cpp, build qq-llm, download the models
 ./terminal/install.sh      # add the !! widget to ~/.zshrc
 # open a new zsh, then:  !! list png files modified today
