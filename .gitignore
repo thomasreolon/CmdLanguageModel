@@ -1,0 +1,11 @@
+# build artifacts
+llm/runner/build/
+*.o
+*.so
+
+# exported models (large; regenerate via llm/export/convert_to_gguf.py)
+llm/models/*.gguf
+
+# python
+__pycache__/
+*.pyc
