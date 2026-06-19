@@ -10,6 +10,7 @@
 // Our structural tokenizer (vocab.txt, generated from hh_llm) owns encode/decode.
 // Framing: <bash><in>{request}<out>  then greedy-decode until <eos>.
 
+#include <algorithm>
 #include <cstdio>
 #include <cstdlib>
 #include <fstream>
@@ -24,11 +25,16 @@
 #endif
 
 // ── structural tokenizer: mirror of hh_llm StructuralTokenizer ───────────────────────
-// vocab.txt has one token per line; line number == token id. encode() scans left->right:
-//   '<'..'>'  -> one structural token   |   "->" -> one token   |   else single char.
+// vocab.txt has one token per line; line number == token id. The vocab itself drives
+// encoding (no hardcoded rules), so it works for both the char-level v1 tokenizer and
+// the word/symbol-level v2 one. encode() scans left->right:
+//   1. '<'..'>' that is a known token -> one structural token
+//   2. greedy longest-match over the multi-char tokens (keywords, "&&", "->", ...)
+//   3. else one character (unknown chars are skipped, matching the reference)
 struct Tokenizer {
     std::vector<std::string> itos;
     std::unordered_map<std::string, int> stoi;
+    std::vector<std::string> multi;   // non-bracket tokens with len>1, longest-first
     int eos = -1;
 
     bool load(const std::string & path) {
@@ -38,6 +44,10 @@ struct Tokenizer {
         while (std::getline(f, line)) { stoi[line] = (int)itos.size(); itos.push_back(line); }
         auto it = stoi.find("<eos>");
         if (it != stoi.end()) eos = it->second;
+        for (const auto & t : itos)
+            if (t.size() > 1 && !(t.front() == '<' && t.back() == '>')) multi.push_back(t);
+        std::sort(multi.begin(), multi.end(),
+                  [](const std::string & a, const std::string & b) { return a.size() > b.size(); });
         return !itos.empty() && eos >= 0;
     }
     std::vector<llama_token> encode(const std::string & s) const {
@@ -45,12 +55,18 @@ struct Tokenizer {
         for (size_t i = 0; i < s.size();) {
             if (s[i] == '<') {                              // structural token <...>
                 size_t j = s.find('>', i);
-                std::string t = s.substr(i, j - i + 1);
-                ids.push_back(stoi.at(t)); i = j + 1;
-            } else if (s[i] == '-' && i + 1 < s.size() && s[i+1] == '>') {
-                ids.push_back(stoi.at("->")); i += 2;       // the one multi-char symbol
-            } else {
-                ids.push_back(stoi.at(std::string(1, s[i]))); i += 1;
+                if (j != std::string::npos) {
+                    auto it = stoi.find(s.substr(i, j - i + 1));
+                    if (it != stoi.end()) { ids.push_back(it->second); i = j + 1; continue; }
+                }
+            }
+            bool matched = false;                           // greedy longest multi-char token
+            for (const auto & m : multi)
+                if (s.compare(i, m.size(), m) == 0) { ids.push_back(stoi.at(m)); i += m.size(); matched = true; break; }
+            if (!matched) {
+                auto it = stoi.find(std::string(1, s[i]));   // single char (skip if unknown)
+                if (it != stoi.end()) ids.push_back(it->second);
+                i += 1;
             }
         }
         return ids;
@@ -74,8 +90,12 @@ int main(int argc, char ** argv) {
     std::string request;
     for (int i = 1; i < argc; ++i) { if (i > 1) request += ' '; request += argv[i]; }
 
-    const std::string model_path = env_or("QQ_MODEL", QQ_REPO_DIR "/llm/models/denselogic-bash.gguf");
-    const std::string vocab_path = env_or("QQ_VOCAB", QQ_REPO_DIR "/llm/export/vocab.txt");
+    const std::string model_path = env_or("QQ_MODEL", QQ_REPO_DIR "/llm/models/bash-v2.gguf");
+    // each model carries its own vocab next to it: foo.gguf -> foo.vocab.txt
+    std::string default_vocab = model_path;
+    if (default_vocab.size() > 5 && default_vocab.substr(default_vocab.size() - 5) == ".gguf")
+        default_vocab = default_vocab.substr(0, default_vocab.size() - 5) + ".vocab.txt";
+    const std::string vocab_path = env_or("QQ_VOCAB", default_vocab);
     const int max_new = 128;
 
     Tokenizer tok;

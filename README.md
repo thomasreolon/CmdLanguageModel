@@ -45,8 +45,15 @@ qq_terminal is self-contained.
 | **1** | NanoGPT (stock GPT-2 shape) | **~none** — uses the existing `gpt2` arch | 38.50% | ✅ done |
 | **2** | DenseLogic (custom `logicsim` mixer + dense skips) | new `denselogic` arch | 38.86% | ✅ done |
 
-Both phases are **verified token-for-token against PyTorch** (Phase 2: 12/12 prompts).
-DenseLogic is the default model. All of its exotic pieces (skip-gate softmax, EMA decay
+The **default model is `bash-v2`** — a larger NanoGPT (n_embd 512, 8 heads/layers) trained
+on a refreshed bash dataset with a richer 202-token word/symbol tokenizer. It's `gpt2`-shape
+(no llama.cpp work) and markedly better than the v1 models (e.g. `commit message "add test"`
+→ `git commit -m "add test"`). Each model carries its own vocab (`<model>.vocab.txt`), and
+the runner's tokenizer is vocab-driven, so the char-level (124) and word-level (202)
+tokenizers coexist. Select a model with `QQ_MODEL=…/denselogic-bash.gguf`.
+
+Both phases are **verified token-for-token against PyTorch** (Phase 2: 12/12; bash-v2: 12/12).
+All of DenseLogic's exotic pieces (skip-gate softmax, EMA decay
 kernel) are *static at inference* and baked into the GGUF, so **no new ggml kernels** were
 needed — the new graph is assembled from existing ops (`ggml_cumsum` for the gated running
 mean, `ggml_conv_1d_dw` for the multi-scale EMA, RoPE/RMSNorm/SwiGLU for the rest). The

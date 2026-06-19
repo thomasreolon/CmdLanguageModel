@@ -126,6 +126,8 @@ def main() -> int:
 
     sd = torch.load(a.ckpt, map_location="cpu", weights_only=False)["model"]
     spec = json.loads(Path(a.spec).read_text())
+    # write the model's vocab next to the .gguf (one token per line; the runner reads it).
+    Path(a.out).with_suffix(".vocab.txt").write_text("".join(t + "\n" for t in spec["itos"]))
     if a.arch == "denselogic":
         return write_denselogic(sd, spec, a)
     n_ff = sd["blocks.0.mlp.c_fc.weight"].shape[0]  # 4*n_embd, read from weights
