@@ -1,4 +1,4 @@
-// qq-llm — the local-model backend for qq_terminal.
+// qq-llm — the local-model backend for ShellWhisper.
 //
 // Contract (the zsh widget depends only on this):
 //   argv[1..]  the natural-language request

@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# One-command setup for qq_terminal: patch llama.cpp, build the runner, fetch models.
+# One-command setup for ShellWhisper: patch llama.cpp, build the runner, fetch models.
 #
-#   git clone --recursive <url> && cd qq_terminal && ./setup.sh
+#   git clone --recursive <url> && cd CmdLanguageModel && ./setup.sh
 #
 # Prereqs: git, cmake, a C++17 compiler, curl. (Re-converting models also needs python
 # with the `gguf` package, but a normal install just downloads them.)

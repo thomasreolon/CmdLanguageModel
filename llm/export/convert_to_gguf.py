@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Export an hh_llm `logicsim_v2` checkpoint to a llama.cpp GGUF.
 
-This is the ONLY place qq_terminal touches hh_llm: it reads the checkpoint, bakes the
+This is the ONLY place ShellWhisper touches hh_llm: it reads the checkpoint, bakes the
 inference-static pieces into plain tensors, and writes a self-contained .gguf that the
 patched llama.cpp (`logicsim_v2` arch) can load. The tokenizer is NOT embedded
 (vocab type "none"); the runner tokenizes from the per-model `<model>.vocab.txt`

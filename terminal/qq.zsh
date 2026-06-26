@@ -1,4 +1,4 @@
-# qq.zsh — the "!!" tweak for qq_terminal.
+# qq.zsh — the "!!" tweak for ShellWhisper.
 #
 # Type a line beginning with "!!" and press Enter: instead of executing, the rest
 # of the line is sent to your local model (qq-llm), and the buffer is REPLACED with
@@ -21,7 +21,7 @@ qq-accept-line() {
       return
     fi
     # Give feedback while the model runs (decode is fast, but be honest about it).
-    zle -M "qq: thinking…"
+    zle -M "ShellWhisper: thinking…"
     local suggestion
     suggestion=$("$QQ_LLM" "$request" 2>/dev/null)
     local rc=$?
@@ -31,7 +31,7 @@ qq-accept-line() {
       CURSOR=$#BUFFER          # cursor to end, fully editable
       zle redisplay
     else
-      zle -M "qq: backend unavailable (QQ_LLM=$QQ_LLM) — buffer left as-is"
+      zle -M "ShellWhisper: backend unavailable (QQ_LLM=$QQ_LLM) — buffer left as-is"
     fi
   else
     zle accept-line            # normal command: run it
