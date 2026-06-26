@@ -1,0 +1,357 @@
+diff --git a/src/llama-arch.cpp b/src/llama-arch.cpp
+index 4a52d97..74557ca 100644
+--- a/src/llama-arch.cpp
++++ b/src/llama-arch.cpp
+@@ -13,6 +13,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
+     { LLM_ARCH_FALCON,           "falcon"           },
+     { LLM_ARCH_GROK,             "grok"             },
+     { LLM_ARCH_GPT2,             "gpt2"             },
++    { LLM_ARCH_LOGICSIM_V2,      "logicsim_v2"      },
+     { LLM_ARCH_GPTJ,             "gptj"             },
+     { LLM_ARCH_GPTNEOX,          "gptneox"          },
+     { LLM_ARCH_MPT,              "mpt"              },
+@@ -569,6 +570,15 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
+     { LLM_TENSOR_MASKED_EMBD_ORDERING,                   "masked_embd_ordering" },
+     { LLM_TENSOR_FC,                                     "fc" },
+     { LLM_TENSOR_D2T,                                    "d2t" },
++    { LLM_TENSOR_LOGIC_IN,                               "blk.%d.logic_in" },
++    { LLM_TENSOR_LOGIC_ALU,                              "blk.%d.logic_alu" },
++    { LLM_TENSOR_LOGIC_OUT,                              "blk.%d.logic_out" },
++    { LLM_TENSOR_LOGIC_EMA_K,                            "blk.%d.logic_ema_k" },
++    { LLM_TENSOR_DA_QKV,                                 "blk.%d.da_qkv" },
++    { LLM_TENSOR_DA_OUT,                                 "blk.%d.da_out" },
++    { LLM_TENSOR_DA_SUBLN,                               "blk.%d.da_subln" },
++    { LLM_TENSOR_DA_LAMBDA,                              "blk.%d.da_lambda" },
++    { LLM_TENSOR_MIX_OUT,                                "blk.%d.mix_out" },
+ };
+ 
+ // declare information about the model weight tensors:
+@@ -798,6 +808,15 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
+     // eagle3
+     {LLM_TENSOR_FC,                         {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_MUL_MAT}},
+     {LLM_TENSOR_D2T,                        {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
++    {LLM_TENSOR_LOGIC_IN,                   {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LOGIC_ALU,                  {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LOGIC_OUT,                  {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_LOGIC_EMA_K,                {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_DA_QKV,                     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_DA_OUT,                     {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
++    {LLM_TENSOR_DA_SUBLN,                   {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_DA_LAMBDA,                  {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL}},
++    {LLM_TENSOR_MIX_OUT,                    {LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL_MAT}},
+ };
+ 
+ LLM_KV::LLM_KV(llm_arch arch, const char * suffix) : arch(arch), suffix(suffix) {}
+diff --git a/src/llama-arch.h b/src/llama-arch.h
+index 989da06..6bea19e 100644
+--- a/src/llama-arch.h
++++ b/src/llama-arch.h
+@@ -19,6 +19,7 @@ enum llm_arch {
+     LLM_ARCH_BAICHUAN,
+     LLM_ARCH_GROK,
+     LLM_ARCH_GPT2,
++    LLM_ARCH_LOGICSIM_V2,
+     LLM_ARCH_GPTJ,
+     LLM_ARCH_GPTNEOX,
+     LLM_ARCH_MPT,
+@@ -577,6 +578,18 @@ enum llm_tensor {
+     LLM_TENSOR_MASKED_EMBD_ORDERING,
+     LLM_TENSOR_FC,
+     LLM_TENSOR_D2T,
++    // logicsim_v2: per-block parallel DifferentialAttention branch + outer projection.
++    // The LogicSim branch (gated cumulative mean + multi-scale EMA) owns LOGIC_{IN,ALU,OUT,EMA_K};
++    // the DifferentialAttention branch owns DA_{QKV,OUT,SUBLN,LAMBDA}; MIX_OUT projects the concat.
++    LLM_TENSOR_LOGIC_IN,
++    LLM_TENSOR_LOGIC_ALU,
++    LLM_TENSOR_LOGIC_OUT,
++    LLM_TENSOR_LOGIC_EMA_K,
++    LLM_TENSOR_DA_QKV,
++    LLM_TENSOR_DA_OUT,
++    LLM_TENSOR_DA_SUBLN,
++    LLM_TENSOR_DA_LAMBDA,
++    LLM_TENSOR_MIX_OUT,
+ };
+ 
+ 
+diff --git a/src/llama-context.cpp b/src/llama-context.cpp
+index 529bc4a..a16b656 100644
+--- a/src/llama-context.cpp
++++ b/src/llama-context.cpp
+@@ -2320,6 +2320,11 @@ uint32_t llama_context::graph_max_nodes(uint32_t n_tokens) const {
+     if (model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_KIMI_LINEAR || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE) {
+         return std::max<uint32_t>(n_tokens * 40, 32u * model.n_tensors());
+     }
++    if (model.arch == LLM_ARCH_LOGICSIM_V2) {
++        // every block expands into the DiffAttn (two interleaved-head attentions) + LogicSim
++        // (cumsum/conv) mixer, ~100 ggml nodes/layer — far more than the generic estimate.
++        return std::max<uint32_t>(8192u, 32u*model.n_tensors());
++    }
+     uint32_t res = std::max<uint32_t>(1024u, 8u*model.n_tensors());
+     for (const auto & lora : model.loras) {
+         res += lora->get_n_nodes();
+diff --git a/src/llama-model.cpp b/src/llama-model.cpp
+index c528755..248e423 100644
+--- a/src/llama-model.cpp
++++ b/src/llama-model.cpp
+@@ -121,6 +121,8 @@ static llama_model * llama_model_mapping(llm_arch arch, const llama_model_params
+             return new llama_model_plamo3(params);
+         case LLM_ARCH_GPT2:
+             return new llama_model_gpt2(params);
++        case LLM_ARCH_LOGICSIM_V2:
++            return new llama_model_logicsim_v2(params);
+         case LLM_ARCH_CODESHELL:
+             return new llama_model_codeshell(params);
+         case LLM_ARCH_ORION:
+@@ -2437,6 +2439,7 @@ llama_rope_type llama_model_rope_type(const llama_model * model) {
+         case LLM_ARCH_BITNET:
+         case LLM_ARCH_QWEN:
+         case LLM_ARCH_QWEN2:
++        case LLM_ARCH_LOGICSIM_V2:
+         case LLM_ARCH_DREAM:
+         case LLM_ARCH_QWEN2MOE:
+         case LLM_ARCH_QWEN3:
+diff --git a/src/llama-model.h b/src/llama-model.h
+index f4718f6..b6875b8 100644
+--- a/src/llama-model.h
++++ b/src/llama-model.h
+@@ -504,6 +504,19 @@ struct llama_layer {
+     struct llama_layer_shortconv shortconv;
+ 
+     struct llama_layer_nextn nextn;
++
++    // logicsim_v2 LogicSim branch: gated cumulative mean + multi-scale EMA mixer
++    struct ggml_tensor * logic_in   = nullptr;
++    struct ggml_tensor * logic_alu  = nullptr;
++    struct ggml_tensor * logic_out  = nullptr;
++    struct ggml_tensor * logic_ema_k = nullptr;
++
++    // logicsim_v2 DifferentialAttention branch + outer post-concat projection
++    struct ggml_tensor * da_qkv    = nullptr;
++    struct ggml_tensor * da_out    = nullptr;
++    struct ggml_tensor * da_subln  = nullptr;
++    struct ggml_tensor * da_lambda = nullptr;
++    struct ggml_tensor * mix_out   = nullptr;
+ };
+ 
+ struct llama_device {
+diff --git a/src/models/logicsim_v2.cpp b/src/models/logicsim_v2.cpp
+new file mode 100644
+index 0000000..3b2bef2
+--- /dev/null
++++ b/src/models/logicsim_v2.cpp
+@@ -0,0 +1,191 @@
++#include "models.h"
++
++// LogicSimV2 (hh_llm arch, models/components/mixers/logicsim_v2.py): a plain prenorm
++// residual stack (NO dense skips) where every block's mixer runs, on an asymmetric channel
++// split, a DifferentialAttention branch (first c1 channels) in parallel with the LogicSim
++// register-machine branch (last c2 channels); the two are concatenated and passed through
++// one outer projection, then a SwiGLU MLP. RMSNorm throughout; RoPE only on the DiffAttn
++// branch's q/k. Geometry: c1 = 2*n_head*d_k (DiffAttn uses 2*n_head q/k head-groups of
++// width d_k and n_head v-heads of width d_v = 2*d_k); c2 = n_embd - c1.
++//
++// Inference-static pieces are baked into tensors by the converter, so the graph uses only
++// standard ggml ops: the DiffAttn `lambda` is one scalar/layer (blk.l.da_lambda) and the
++// LogicSim per-channel EMA decay is the causal conv kernel (blk.l.logic_ema_k).
++// Attention is computed cache-free with an explicit causal mask
++// (ggml_diag_mask_inf); the runner re-decodes the full sequence each step (logicsim is
++// recurrent), so no KV cache is consulted.
++
++void llama_model_logicsim_v2::load_arch_hparams(llama_model_loader & ml) {
++    ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
++    type = LLM_TYPE_SMALL;
++}
++
++void llama_model_logicsim_v2::load_arch_tensors(llama_model_loader & ml) {
++    LLAMA_LOAD_LOCALS;
++
++    const int64_t hd_k = hparams.n_embd_head_k();   // q/k head width (32)
++    const int64_t hd_v = hparams.n_embd_head_v();   // v head width (64 = 2*hd_k)
++    const int64_t c1   = 2 * n_head * hd_k;         // DiffAttn branch width (384)
++    const int64_t c2   = n_embd - c1;               // LogicSim branch width (128)
++
++    tok_embd    = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD,  "weight"), {n_embd, n_vocab}, 0);
++    output_norm = create_tensor(tn(LLM_TENSOR_OUTPUT_NORM, "weight"), {n_embd}, 0);
++    output      = create_tensor(tn(LLM_TENSOR_OUTPUT,      "weight"), {n_embd, n_vocab}, TENSOR_NOT_REQUIRED);
++    if (output == nullptr) {  // tied head
++        output  = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, TENSOR_DUPLICATED);
++    }
++
++    for (int i = 0; i < n_layer; ++i) {
++        auto & layer = layers[i];
++        layer.attn_norm   = create_tensor(tn(LLM_TENSOR_ATTN_NORM,   "weight", i), {n_embd}, 0);
++        // DiffAttn branch (c1)
++        layer.da_qkv      = create_tensor(tn(LLM_TENSOR_DA_QKV,      "weight", i), {c1, 3 * c1}, 0);
++        layer.da_out      = create_tensor(tn(LLM_TENSOR_DA_OUT,      "weight", i), {c1, c1}, 0);
++        layer.da_subln    = create_tensor(tn(LLM_TENSOR_DA_SUBLN,    "weight", i), {hd_v}, 0);
++        layer.da_lambda   = create_tensor(tn(LLM_TENSOR_DA_LAMBDA,   "weight", i), {1}, 0);
++        // LogicSim branch (c2)
++        layer.logic_in    = create_tensor(tn(LLM_TENSOR_LOGIC_IN,    "weight", i), {c2, 3 * c2}, 0);
++        layer.logic_alu   = create_tensor(tn(LLM_TENSOR_LOGIC_ALU,   "weight", i), {2 * c2, c2}, 0);
++        layer.logic_out   = create_tensor(tn(LLM_TENSOR_LOGIC_OUT,   "weight", i), {c2, c2}, 0);
++        layer.logic_ema_k = create_tensor(tn(LLM_TENSOR_LOGIC_EMA_K, "weight", i), {n_ctx_train, 1, c2}, 0);
++        // outer post-concat projection + SwiGLU MLP
++        layer.mix_out     = create_tensor(tn(LLM_TENSOR_MIX_OUT,     "weight", i), {n_embd, n_embd}, 0);
++        layer.ffn_norm    = create_tensor(tn(LLM_TENSOR_FFN_NORM,    "weight", i), {n_embd}, 0);
++        layer.ffn_gate    = create_tensor(tn(LLM_TENSOR_FFN_GATE,    "weight", i), {n_embd, n_ff}, 0);
++        layer.ffn_up      = create_tensor(tn(LLM_TENSOR_FFN_UP,      "weight", i), {n_embd, n_ff}, 0);
++        layer.ffn_down    = create_tensor(tn(LLM_TENSOR_FFN_DOWN,    "weight", i), {n_ff, n_embd}, 0);
++    }
++}
++
++std::unique_ptr<llm_graph_context> llama_model_logicsim_v2::build_arch_graph(const llm_graph_params & params) const {
++    return std::make_unique<graph>(*this, params);
++}
++
++llama_model_logicsim_v2::graph::graph(const llama_model & model, const llm_graph_params & params)
++        : llm_graph_context(params) {
++    const int64_t hd_k = hparams.n_embd_head_k();    // 32
++    const int64_t hd_v = hparams.n_embd_head_v();    // 64
++    const int64_t H    = n_head;                      // 6 DiffAttn v-heads
++    const int64_t c1   = 2 * H * hd_k;               // 384
++    const int64_t c2   = n_embd - c1;                // 128
++    const float   kq_scale    = 1.0f / sqrtf((float) hd_k);
++    const float   subln_scale = 1.0f - 0.8f;         // (1 - lambda_init)
++
++    ggml_tensor * inpL        = build_inp_embd(model.tok_embd);
++    ggml_tensor * inp_pos     = build_inp_pos();
++    ggml_tensor * inp_out_ids = build_inp_out_ids();
++
++    // one causal attention: q,k = [hd_k, H, T], v = [hd_v, H, T] -> [c1=H*hd_v, T]
++    auto attn_one = [&](ggml_tensor * q, ggml_tensor * k, ggml_tensor * v) -> ggml_tensor * {
++        const int64_t T = q->ne[2];
++        ggml_tensor * qp = ggml_cont(ctx0, ggml_permute(ctx0, q, 0, 2, 1, 3));   // [hd_k, T, H]
++        ggml_tensor * kp = ggml_cont(ctx0, ggml_permute(ctx0, k, 0, 2, 1, 3));   // [hd_k, T, H]
++        ggml_tensor * kq = ggml_mul_mat(ctx0, kp, qp);                           // [T, T, H]
++        ggml_mul_mat_set_prec(kq, GGML_PREC_F32);
++        kq = ggml_scale(ctx0, kq, kq_scale);
++        kq = ggml_diag_mask_inf(ctx0, kq, 0);                                    // causal
++        kq = ggml_soft_max(ctx0, kq);
++        ggml_tensor * vp = ggml_cont(ctx0, ggml_permute(ctx0, v, 0, 2, 1, 3));   // [hd_v, T, H]
++        vp = ggml_cont(ctx0, ggml_transpose(ctx0, vp));                          // [T, hd_v, H]
++        ggml_tensor * kqv = ggml_mul_mat(ctx0, vp, kq);                          // [hd_v, T, H]
++        ggml_tensor * o = ggml_permute(ctx0, kqv, 0, 2, 1, 3);                   // [hd_v, H, T]
++        return ggml_cont_2d(ctx0, o, hd_v * H, T);                               // [c1, T]
++    };
++
++    // DifferentialAttention on the first c1 channels (see diffattn.py / logicsim_v2.py)
++    auto diffattn = [&](const llama_layer & L, ggml_tensor * x1) -> ggml_tensor * {
++        const int64_t T = x1->ne[1];
++        ggml_tensor * qkv = build_lora_mm(L.da_qkv, x1);                         // [3c1, T]
++        ggml_tensor * q = ggml_cont(ctx0, ggml_view_2d(ctx0, qkv, c1, T, qkv->nb[1], 0 * c1 * sizeof(float)));
++        ggml_tensor * k = ggml_cont(ctx0, ggml_view_2d(ctx0, qkv, c1, T, qkv->nb[1], 1 * c1 * sizeof(float)));
++        ggml_tensor * v = ggml_cont(ctx0, ggml_view_2d(ctx0, qkv, c1, T, qkv->nb[1], 2 * c1 * sizeof(float)));
++        q = ggml_reshape_3d(ctx0, q, hd_k, 2 * H, T);                           // [hd_k, 2H, T]
++        k = ggml_reshape_3d(ctx0, k, hd_k, 2 * H, T);
++        v = ggml_reshape_3d(ctx0, v, hd_v, H, T);                               // [hd_v, H, T]
++        q = ggml_rope_ext(ctx0, q, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
++                          freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
++        k = ggml_rope_ext(ctx0, k, inp_pos, nullptr, n_rot, rope_type, n_ctx_orig,
++                          freq_base, freq_scale, ext_factor, attn_factor, beta_fast, beta_slow);
++        q = ggml_cont(ctx0, q);
++        k = ggml_cont(ctx0, k);
++        // interleaved even/odd q/k head groups (PyTorch q[:,0::2] / q[:,1::2])
++        ggml_tensor * q1 = ggml_cont(ctx0, ggml_view_3d(ctx0, q, hd_k, H, T, q->nb[1] * 2, q->nb[2], 0));
++        ggml_tensor * q2 = ggml_cont(ctx0, ggml_view_3d(ctx0, q, hd_k, H, T, q->nb[1] * 2, q->nb[2], q->nb[1]));
++        ggml_tensor * k1 = ggml_cont(ctx0, ggml_view_3d(ctx0, k, hd_k, H, T, k->nb[1] * 2, k->nb[2], 0));
++        ggml_tensor * k2 = ggml_cont(ctx0, ggml_view_3d(ctx0, k, hd_k, H, T, k->nb[1] * 2, k->nb[2], k->nb[1]));
++        ggml_tensor * a1 = attn_one(q1, k1, v);                                 // [c1, T]
++        ggml_tensor * a2 = attn_one(q2, k2, v);                                 // [c1, T]
++        ggml_tensor * y  = ggml_sub(ctx0, a1, ggml_mul(ctx0, a2, L.da_lambda)); // a1 - lambda*a2
++        // subln: RMSNorm over each head's hd_v, * weight, * (1 - lambda_init)
++        y = ggml_reshape_3d(ctx0, y, hd_v, H, T);
++        y = ggml_rms_norm(ctx0, y, hparams.f_norm_rms_eps);
++        y = ggml_mul(ctx0, y, L.da_subln);
++        y = ggml_scale(ctx0, y, subln_scale);
++        y = ggml_cont_2d(ctx0, y, c1, T);
++        return build_lora_mm(L.da_out, y);                                      // [c1, T]
++    };
++
++    // LogicSim on the last c2 channels: gated cumulative running-mean + multi-scale EMA
++    auto logicsim = [&](const llama_layer & L, ggml_tensor * x2) -> ggml_tensor * {
++        const int64_t T = x2->ne[1];
++        ggml_tensor * vgg = build_lora_mm(L.logic_in, x2);                      // [3c2, T]
++        ggml_tensor * v    = ggml_cont(ctx0, ggml_view_2d(ctx0, vgg, c2, T, vgg->nb[1], 0 * c2 * sizeof(float)));
++        ggml_tensor * gin  = ggml_cont(ctx0, ggml_view_2d(ctx0, vgg, c2, T, vgg->nb[1], 1 * c2 * sizeof(float)));
++        ggml_tensor * gout = ggml_cont(ctx0, ggml_view_2d(ctx0, vgg, c2, T, vgg->nb[1], 2 * c2 * sizeof(float)));
++        gin  = ggml_sigmoid(ctx0, gin);
++        gout = ggml_sigmoid(ctx0, gout);
++        ggml_tensor * written = ggml_mul(ctx0, gin, v);                         // [c2, T]
++
++        // port 1 — exact gated running mean (cumsum runs on ne0, so transpose time in/out)
++        ggml_tensor * num = ggml_cumsum(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, written)));
++        num = ggml_cont(ctx0, ggml_transpose(ctx0, num));                       // [c2, T]
++        ggml_tensor * den = ggml_cumsum(ctx0, ggml_cont(ctx0, ggml_transpose(ctx0, gin)));
++        den = ggml_cont(ctx0, ggml_transpose(ctx0, den));                       // [c2, T]
++        ggml_tensor * counter = ggml_div(ctx0, num, den);
++
++        // port 2 — multi-scale EMA via depthwise causal conv with the baked kernel
++        ggml_tensor * data = ggml_cont(ctx0, ggml_transpose(ctx0, written));    // [T, c2]
++        const int K = (int) L.logic_ema_k->ne[0];
++        ggml_tensor * ker = ggml_cast(ctx0, L.logic_ema_k, GGML_TYPE_F16);
++        ggml_tensor * ema = ggml_conv_1d_dw(ctx0, ker, data, 1, K - 1, 1);      // left-pad K-1 (causal)
++        ema = ggml_cont(ctx0, ggml_view_2d(ctx0, ema, T, c2, ema->nb[1], 0));   // first T -> [T, c2]
++        ema = ggml_cont(ctx0, ggml_transpose(ctx0, ema));                       // [c2, T]
++
++        ggml_tensor * memory = ggml_add(ctx0, counter, ema);
++        ggml_tensor * fused  = build_lora_mm(L.logic_alu, ggml_concat(ctx0, v, memory, 0));
++        ggml_tensor * y = ggml_mul(ctx0, ggml_silu(ctx0, fused), gout);
++        return build_lora_mm(L.logic_out, y);                                   // [c2, T]
++    };
++
++    ggml_tensor * cur = inpL;                                                   // [n_embd, T]
++    for (int il = 0; il < n_layer; ++il) {
++        const llama_layer & L = model.layers[il];
++
++        ggml_tensor * normed = build_norm(cur, L.attn_norm, nullptr, LLM_NORM_RMS, il);   // norm1
++        const int64_t T = normed->ne[1];
++        ggml_tensor * x1 = ggml_cont(ctx0, ggml_view_2d(ctx0, normed, c1, T, normed->nb[1], 0));
++        ggml_tensor * x2 = ggml_cont(ctx0, ggml_view_2d(ctx0, normed, c2, T, normed->nb[1], c1 * sizeof(float)));
++
++        ggml_tensor * mix = ggml_concat(ctx0, diffattn(L, x1), logicsim(L, x2), 0);        // [n_embd, T]
++        mix = build_lora_mm(L.mix_out, mix);
++        cur = ggml_add(ctx0, cur, mix);                                                    // residual
++
++        ggml_tensor * fn = build_norm(cur, L.ffn_norm, nullptr, LLM_NORM_RMS, il);          // norm2
++        fn = build_ffn(fn, L.ffn_up, nullptr, nullptr, L.ffn_gate, nullptr, nullptr,
++                       L.ffn_down, nullptr, nullptr, nullptr, LLM_FFN_SILU, LLM_FFN_PAR, il);
++        cur = ggml_add(ctx0, cur, fn);                                                     // residual
++        cb(cur, "l_out", il);
++    }
++
++    if (inp_out_ids) {
++        cur = ggml_get_rows(ctx0, cur, inp_out_ids);
++    }
++    cur = build_norm(cur, model.output_norm, nullptr, LLM_NORM_RMS, -1);                    // ln_f
++    res->t_embd = cur;
++
++    cur = build_lora_mm(model.output, cur);
++    cb(cur, "result_output", -1);
++    res->t_logits = cur;
++
++    ggml_build_forward_expand(gf, cur);
++}
+diff --git a/src/models/models.h b/src/models/models.h
+index 2ac8415..e8385a6 100644
+--- a/src/models/models.h
++++ b/src/models/models.h
+@@ -676,6 +676,19 @@ struct llama_model_gpt2 : public llama_model_base {
+ };
+ 
+ 
++struct llama_model_logicsim_v2 : public llama_model_base {
++    llama_model_logicsim_v2(const struct llama_model_params & params) : llama_model_base(params) {}
++    void load_arch_hparams(llama_model_loader & ml) override;
++    void load_arch_tensors(llama_model_loader & ml) override;
++
++    struct graph : public llm_graph_context {
++        graph(const llama_model & model, const llm_graph_params & params);
++    };
++
++    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
++};
++
++
+ struct llama_model_codeshell : public llama_model_base {
+     llama_model_codeshell(const struct llama_model_params & params) : llama_model_base(params) {}
+     void load_arch_hparams(llama_model_loader & ml) override;

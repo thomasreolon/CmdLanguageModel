@@ -8,19 +8,18 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-# Base URL of the GitHub Release that holds the .gguf model files. Override via env, e.g.
-#   QQ_RELEASE_URL=https://github.com/me/qq_terminal/releases/download/v1 ./setup.sh
-# pinned to the v1 tag (the release is a prerelease, which `releases/latest` skips)
-: "${QQ_RELEASE_URL:=https://github.com/thomasreolon/CmdLanguageModel/releases/download/v1}"
+# Base URL of the GitHub Release that holds the .gguf model file. Override via env, e.g.
+#   QQ_RELEASE_URL=https://github.com/me/CmdLanguageModel/releases/download/v2 ./setup.sh
+: "${QQ_RELEASE_URL:=https://github.com/thomasreolon/CmdLanguageModel/releases/latest/download}"
 
 echo "==> 1/4  llama.cpp submodule"
 [ -f llm/llama.cpp/CMakeLists.txt ] || git submodule update --init llm/llama.cpp
 
-echo "==> 2/4  denselogic arch patch"
-if grep -q LLM_ARCH_DENSELOGIC llm/llama.cpp/src/llama-arch.h 2>/dev/null; then
+echo "==> 2/4  logicsim_v2 arch patch"
+if grep -q LLM_ARCH_LOGICSIM_V2 llm/llama.cpp/src/llama-arch.h 2>/dev/null; then
     echo "    already applied."
 else
-    git -C llm/llama.cpp apply "$PWD/llm/denselogic-arch.patch"
+    git -C llm/llama.cpp apply "$PWD/llm/logicsim_v2-arch.patch"
     echo "    patched."
 fi
 

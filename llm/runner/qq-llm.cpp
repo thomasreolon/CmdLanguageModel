@@ -90,7 +90,7 @@ int main(int argc, char ** argv) {
     std::string request;
     for (int i = 1; i < argc; ++i) { if (i > 1) request += ' '; request += argv[i]; }
 
-    const std::string model_path = env_or("QQ_MODEL", QQ_REPO_DIR "/llm/models/bash-v2.gguf");
+    const std::string model_path = env_or("QQ_MODEL", QQ_REPO_DIR "/llm/models/logicsim_v2-bash.gguf");
     // each model carries its own vocab next to it: foo.gguf -> foo.vocab.txt
     std::string default_vocab = model_path;
     if (default_vocab.size() > 5 && default_vocab.substr(default_vocab.size() - 5) == ".gguf")
